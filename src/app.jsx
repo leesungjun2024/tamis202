@@ -3,31 +3,32 @@ import WaveSurfer from 'wavesurfer.js';
 import { supabase } from './supabaseClient';
 
 export default function App() {
-  // 인증(Login) 상태
+  // 1. 인증(Login) 상태
   const [user, setUser] = useState(null);   
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isSignUp, setIsSignUp] = useState(false);
 
-  // 탭 전환 상태 ('studio' | 'portfolio')
+  // 2. 탭 전환 상태 ('studio' | 'portfolio')
   const [activeTab, setActiveTab] = useState('studio');
   const [myProjects, setMyProjects] = useState([]);
   const [currentProjectId, setCurrentProjectId] = useState(null);
 
+  // 3. 오디오 재생 및 타임라인 상태
   const [isPlaying, setIsPlaying] = useState(false);
   const [isSequentialPlaying, setIsSequentialPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-
   const [projectName, setProjectName] = useState('나의 새 프로젝트');
 
-  // 트랙 리스트 (내 파일 vs 팀원/타인 파일 구분)
+  // 4. 트랙 리스트 (내 파일 vs 팀원/타인 파일 구분)
   const [tracks, setTracks] = useState([
     { id: 'vocal', title: '🎤 보컬 스템 (내 음악)', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3', muted: false, uploader: 'mine', order: 1 },
     { id: 'instrumental', title: '🎸 악기 스템 (팀원/타인 음악)', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3', muted: false, uploader: 'team', order: 2 },
     { id: 'drums', title: '🥁 드럼 및 베이스 (팀원/타인 음악)', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3', muted: false, uploader: 'team', order: 3 }
   ]);
 
+  // 5. 피드백 및 댓글 상태
   const [comments, setComments] = useState([]);
   const [newCommentText, setNewCommentText] = useState('');
   const [authorName, setAuthorName] = useState('팀원');
@@ -35,7 +36,7 @@ export default function App() {
   const [startTime, setStartTime] = useState(0);
   const [endTime, setEndTime] = useState(0);
 
-  // 자동 리프레쉬 상태 및 Ref 설정
+  // 6. 자동 리프레쉬 상태 및 Ref 설정
   const [autoRefresh, setAutoRefresh] = useState(false);
   const autoRefreshRef = useRef(autoRefresh);
   autoRefreshRef.current = autoRefresh;
@@ -48,7 +49,7 @@ export default function App() {
   const trackListRef = useRef(tracks);
   trackListRef.current = tracks;
 
-  // 세션 체크 및 실시간 구독 설정
+  // 세션 체크 및 Supabase Realtime 구독 설정
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
@@ -126,6 +127,7 @@ export default function App() {
     }
   };
 
+  // WaveSurfer 파형 초기화 및 이벤트 바인딩
   useEffect(() => {
     let isMounted = true;
     const sortedTracks = [...tracks].sort((a, b) => a.order - b.order);
@@ -351,7 +353,6 @@ export default function App() {
     }
 
     if (currentProjectId) {
-      // 기존 프로젝트 업데이트
       const { error } = await supabase
         .from('projects')
         .update({ project_name: projectName })
@@ -360,7 +361,6 @@ export default function App() {
       if (error) alert('프로젝트 수정 실패');
       else alert(`"${projectName}" 프로젝트가 수정되었습니다!`);
     } else {
-      // 새 프로젝트 저장
       const { data, error } = await supabase
         .from('projects')
         .insert([{ project_name: projectName, user_id: user.id }])
@@ -401,7 +401,7 @@ export default function App() {
 
   const sortedTracks = [...tracks].sort((a, b) => a.order - b.order);
 
-  // 로그인하지 않은 경우 로그인/회원가입 화면 표시
+  // 비로그인 상태 화면 렌더링
   if (!user) {
     return (
       <div style={{ maxWidth: '400px', margin: '80px auto', padding: '30px', background: '#fff', borderRadius: '16px', boxShadow: '0 4px 20px rgba(0,0,0,0.08)', fontFamily: 'sans-serif' }}>
