@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import WaveSurfer from 'wavesurfer.js';
-import { supabase } from './supabaseClient';
+import { supabase } from './supabaseClient'; 
 
 export default function App() {
   // 1. 인증(Login) 상태
