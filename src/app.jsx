@@ -16,6 +16,7 @@ export default function App() {
   const [myPortfolios, setMyPortfolios] = useState([]);
   const [currentPortfolioId, setCurrentPortfolioId] = useState(null);
   const [portfolioName, setPortfolioName] = useState('새 포트폴리오');
+  const [portfolioOwnerEmail, setPortfolioOwnerEmail] = useState(''); // 포트폴리오 소유자 이메일
   const [portfolioMembers, setPortfolioMembers] = useState([]);
   const [inviteEmail, setInviteEmail] = useState('');
 
@@ -49,7 +50,7 @@ export default function App() {
   // 관리자 이메일 판별 함수
   const checkIsAdmin = (userEmail) => {
     if (!userEmail) return false;
-    return userEmail === 'admin@admin.com' || userEmail.startsWith('admin') || userEmail === 'babadol@naver.com';
+    return userEmail === 'admin@admin.com' || userEmail.startsWith('admin') || userEmail === 'krsungjun@gmail.com';
   };
 
   // 클라이언트 IP, 지역/국가 및 접속 매체 기록
@@ -205,7 +206,6 @@ export default function App() {
     }
   };
 
-  // 관리자 전용 확장 데이터 조회 (요청사항 반영 매핑)
   const fetchAdminData = async () => {
     const { data: pData } = await supabase.from('portfolios').select('*').order('created_at', { ascending: false });
     const { data: mData } = await supabase.from('portfolio_members').select('*');
@@ -222,9 +222,6 @@ export default function App() {
       const pTracks = (tData || []).filter(t => t.portfolio_id === p.id);
       const pFeedbacks = (fData || []).filter(f => f.portfolio_id === p.id);
 
-      const matchedLog = (lData || []).find(l => l.user_email && p.user_id); 
-      const emailValue = matchedLog ? matchedLog.user_email : (p.user_id ? `user_${p.user_id.substring(0, 6)}` : '알 수 없음');
-
       const trackDates = pTracks.map(t => new Date(t.created_at || t.updated_at || 0)).filter(d => !isNaN(d));
       const lastTrackDate = trackDates.length > 0 ? new Date(Math.max(...trackDates)) : null;
 
@@ -233,11 +230,11 @@ export default function App() {
 
       return {
         ...p,
-        user_email: emailValue,           // 이메일 (user_email)
+        user_email: p.user_email || user?.email || '알 수 없음', // DB에 저장된 user_email 직접 활용
         member_count: 1 + pMembers.length,
         last_track_date: lastTrackDate ? lastTrackDate.toLocaleString() : '음원 없음',
         last_feedback_date: lastFeedbackDate ? lastFeedbackDate.toLocaleString() : '피드백 없음',
-        owner_id: p.user_id || '알 수 없음' // 소유자 (맨 마지막 열)
+        owner_id: p.user_id || '알 수 없음'
       };
     });
 
@@ -264,6 +261,9 @@ export default function App() {
   const handleLoadPortfolio = async (portfolio) => {
     setCurrentPortfolioId(portfolio.id);
     setPortfolioName(portfolio.portfolio_name);
+    
+    // portfolios 테이블에 저장된 user_email을 바로 설정
+    setPortfolioOwnerEmail(portfolio.user_email || user?.email || '알 수 없음');
     setActiveTab('studio');
 
     const { data: trackData } = await supabase
@@ -306,14 +306,15 @@ export default function App() {
     const title = prompt('새 포트폴리오 이름을 입력하세요:', '나의 새 포트폴리오');
     if (!title) return;
 
+    // 생성 시 user_id와 함께 user_email을 함께 저장
     const { data, error } = await supabase
       .from('portfolios')
-      .insert([{ portfolio_name: title, user_id: user.id, view_yn: 'Y' }])
+      .insert([{ portfolio_name: title, user_id: user.id, user_email: user.email, view_yn: 'Y' }])
       .select()
       .single();
 
     if (error) {
-      alert('포트폴리오 생성 실패');
+      alert('포트폴리오 생성 실패: ' + error.message);
     } else {
       fetchMyPortfolios(user, isAdmin);
       handleLoadPortfolio(data);
@@ -590,11 +591,9 @@ export default function App() {
         </div>
       </div>
 
-      {/* 1. 관리자 대시보드 페이지 (기간 필터 및 그래프 포함) */}
+      {/* 1. 관리자 대시보드 페이지 */}
       {activeTab === 'admin_dashboard' && isAdmin ? (
         <div style={{ padding: '10px 0' }}>
-          
-          {/* 상단 제목 및 기간 필터 버튼 */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
             <h2 style={{ fontSize: '18px', fontWeight: 'bold', color: '#1e293b', margin: 0 }}>📊 관리자 대시보드 상세 통계</h2>
             <div style={{ display: 'flex', gap: '6px', background: '#f1f5f9', padding: '4px', borderRadius: '8px' }}>
@@ -619,7 +618,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* 그래프 1: 시계열 포트폴리오 및 회원수 추이 */}
           <div style={{ background: '#f8fafc', padding: '16px', borderRadius: '12px', border: '1px solid #e2e8f0', marginBottom: '20px' }}>
             <h3 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '12px', color: '#334155' }}>📈 1. 시계열 일자별 포트폴리오 및 회원수 현황</h3>
             <div style={{ height: '160px', display: 'flex', alignItems: 'flex-end', gap: '12px', paddingBottom: '20px', borderBottom: '1px solid #cbd5e1' }}>
@@ -637,7 +635,6 @@ export default function App() {
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
-            {/* 그래프 2: 콘텐츠 및 피드백 지표 */}
             <div style={{ background: '#f8fafc', padding: '16px', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
               <h3 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '12px', color: '#334155' }}>🎵 2. 콘텐츠 및 피드백 지표</h3>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '12px' }}>
@@ -653,7 +650,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* 그래프 3: 로그인 지역 및 회원 분포 */}
             <div style={{ background: '#f8fafc', padding: '16px', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
               <h3 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '12px', color: '#334155' }}>🌍 3. 로그인 지역 및 회원 분포</h3>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '12px' }}>
@@ -674,11 +670,10 @@ export default function App() {
           </div>
         </div>
       ) : activeTab === 'admin_management' && isAdmin ? (
-        /* 2. 관리 페이지 (요청사항 반영 최종본) */
+        /* 2. 관리 페이지 */
         <div style={{ padding: '10px 0' }}>
           <h2 style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '16px', color: '#1e293b' }}>⚙️ 관리 페이지 (조회/사용 여부 및 상세 정보 관리)</h2>
 
-          {/* 포트폴리오 관리 테이블 (이메일, 소유자 맨 마지막 이동) */}
           <div style={{ marginBottom: '28px', background: '#f8fafc', padding: '16px', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
             <h3 style={{ fontSize: '15px', fontWeight: 'bold', marginBottom: '12px', color: '#334155' }}>📁 포트폴리오 사용(조회) 여부 및 상세 관리</h3>
             <div style={{ overflowX: 'auto' }}>
@@ -715,7 +710,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* 피드백 관리 테이블 (최종수정일자 삭제 반영) */}
           <div style={{ background: '#f8fafc', padding: '16px', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
             <h3 style={{ fontSize: '15px', fontWeight: 'bold', marginBottom: '12px', color: '#334155' }}>💬 피드백 사용(조회) 여부 및 상세 관리</h3>
             <div style={{ overflowX: 'auto' }}>
@@ -751,7 +745,7 @@ export default function App() {
           </div>
         </div>
       ) : activeTab === 'admin_logs' && isAdmin ? (
-        /* 3. 사용자 로그인 이력 페이지 (지역/국가 포함) */
+        /* 3. 로그인 이력 페이지 */
         <div style={{ padding: '10px 0' }}>
           <h2 style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '16px', color: '#1e293b' }}>📋 사용자 로그인 이력 조회</h2>
           <div style={{ background: '#f8fafc', padding: '16px', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
@@ -821,7 +815,7 @@ export default function App() {
           <div style={{ marginBottom: '20px', padding: '16px', background: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '10px' }}>
               <h2 style={{ fontSize: '18px', fontWeight: 'bold', color: '#1e293b', margin: 0 }}>
-                🎵 현재 포트폴리오: <span style={{ color: '#4f46e5' }}>{portfolioName}</span>
+                🎵 현재 포트폴리오: <span style={{ color: '#4f46e5' }}>{portfolioName} ({portfolioOwnerEmail})</span>
               </h2>
               <label style={{ padding: '6px 12px', background: '#3b82f6', color: '#fff', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px', display: 'inline-block' }}>
                 📁 음원 추가하기 (CORS 안전 샘플)
@@ -831,10 +825,34 @@ export default function App() {
 
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid #e2e8f0', paddingTop: '12px', flexWrap: 'wrap', gap: '10px' }}>
               <div>
-                <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#334155', marginRight: '8px' }}>👥 사용자 접속 현황:</span>
-                <span style={{ fontSize: '12px', background: '#dbeafe', color: '#1e40af', padding: '2px 8px', borderRadius: '6px', marginRight: '6px' }}>
-                  {user.email}
+                <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#334155', marginRight: '8px' }}>👥 팀원 접속현황:</span>
+                
+                {/* 현재 접속 중인 사용자 (하이라이트 표시) */}
+                <span style={{ fontSize: '12px', background: '#dbeafe', color: '#1e40af', padding: '3px 8px', borderRadius: '6px', marginRight: '6px', fontWeight: 'bold', border: '1px solid #3b82f6' }}>
+                  🟢 {user.email} (현재 접속중)
                 </span>
+
+                {/* 초대된 멤버 목록 (미접속자는 회색 처리) */}
+                {portfolioMembers.map((m) => {
+                  if (m.member_email === user.email) return null;
+                  return (
+                    <span 
+                      key={m.id} 
+                      style={{ 
+                        fontSize: '12px', 
+                        background: '#f1f5f9', 
+                        color: '#94a3b8', 
+                        padding: '3px 8px', 
+                        borderRadius: '6px', 
+                        marginRight: '6px',
+                        border: '1px solid #cbd5e1'
+                      }}
+                      title="미접속"
+                    >
+                      ⚪ {m.member_email} ({m.role})
+                    </span>
+                  );
+                })}
               </div>
 
               <form onSubmit={handleInviteMember} style={{ display: 'flex', gap: '6px' }}>
