@@ -85,10 +85,6 @@ export default function App() {
       const currentLoginTime = new Date();
       const currentLoginTimeISO = currentLoginTime.toISOString();
 
-      // 요청사항 반영: 
-      // 1) user_email이 현재 유저와 같고
-      // 2) current_time - login_time > 30min (30분 초과) 이며
-      // 3) logout_time이 null인 이전 세션들을 당일 00:00:00 시간으로 업데이트
       const midnightToday = new Date(currentLoginTime);
       midnightToday.setHours(0, 0, 0, 0);
 
@@ -105,7 +101,6 @@ export default function App() {
         console.error('이전 로그인 세션 강제 종료 업데이트 실패:', updateError.message);
       }
 
-      // 새로운 로그인 기록 삽입
       const { data, error } = await supabase
         .from('login_logs')
         .insert([{ user_email: userEmail, ip_address: ip, location: location, device: device, login_time: currentLoginTimeISO }])
@@ -158,13 +153,12 @@ export default function App() {
     };
   }, []);
 
-  // 로그인 이력 자동 리프레시 타이머 설정
   useEffect(() => {
     if (activeTab !== 'admin_logs' || autoRefreshInterval === 'none') return;
 
-    let delayMs = 10000; // 10초
-    if (autoRefreshInterval === '1m') delayMs = 60000; // 1분
-    if (autoRefreshInterval === '5m') delayMs = 300000; // 5분
+    let delayMs = 10000; 
+    if (autoRefreshInterval === '1m') delayMs = 60000; 
+    if (autoRefreshInterval === '5m') delayMs = 300000; 
 
     const timer = setInterval(() => {
       fetchAdminData();
@@ -298,7 +292,6 @@ export default function App() {
       .select('*, tracks(track_name), portfolios(portfolio_name)')
       .order('created_at', { ascending: false });
     
-    // 로그인 이력 정렬: 접속 중(logout_time 없음) 우선 -> 그 다음 로그아웃 완료 건 (각 그룹 내 로그인시간 최신순)
     const { data: lData } = await supabase.from('login_logs').select('*');
     let sortedLogs = [];
     if (lData) {
@@ -359,7 +352,6 @@ export default function App() {
     }
   };
 
-  // 피드백 및 대댓글 목록 조회 공통 함수
   const fetchFeedbacksAndReplies = async (portfolioId) => {
     const { data: feedbackData } = await supabase
       .from('feedbacks')
@@ -640,7 +632,6 @@ export default function App() {
     }
   };
 
-  // {수정 5-11} 1) 대댓글 등록 핸들러
   const handleAddReply = async (parentFeedbackId) => {
     if (!replyText.trim() || !currentPortfolioId) return;
 
@@ -659,7 +650,6 @@ export default function App() {
       reactions: {}
     };
 
-
     const { error } = await supabase.from('feedbacks').insert([newReply]);
 
     if (error) {
@@ -671,7 +661,6 @@ export default function App() {
     }
   };
 
-  // {수정 5-11} 2) Good, Bad, Not Bad 및 이모티콘 반응 토글 핸들러
   const handleReaction = async (comment, reactionType) => {
     let currentReactions = comment.reactions || {};
     if (typeof currentReactions === 'string') {
@@ -818,7 +807,6 @@ export default function App() {
 
   const sortedTracks = [...tracks].sort((a, b) => (a.order || 0) - (b.order || 0));
 
-  // {수정 5-11} 루트 댓글과 대댓글 분류
   const rootComments = comments.filter(c => !c.parent_id);
   const getReplies = (parentId) => comments.filter(c => c.parent_id === parentId);
 
@@ -990,7 +978,8 @@ export default function App() {
                   }, {})
                 ).map(([location, count], idx) => (
                   <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', background: '#fff', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
-                    <span>📍 {location}</span><span style={{ background: '#e0e7ff', color: '#3730a3', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>{count} 명</span>
+                    <span>📍 {location}</span>
+                    <span style={{ background: '#e0e7ff', color: '#3730a3', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>{count} 명</span>
                   </div>
                 ))}
                 {filteredLogs.length === 0 && <div style={{ textAlign: 'center', color: '#94a3b8', padding: '20px' }}>데이터 없음</div>}
@@ -1267,34 +1256,64 @@ export default function App() {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
             <div style={{ padding: '16px', background: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
               <h3 style={{ fontSize: '16px', fontWeight: 'bold', marginBottom: '12px', color: '#1e293b' }}>💬 피드백 남기기</h3>
-              <form onSubmit={handleAddComment} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <div style={{ flex: 1 }}>
-                    <label style={{ fontSize: '11px', color: '#64748b', display: 'block', marginBottom: '2px' }}>작성자</label>
-                    <input type="text" value={authorName} onChange={(e) => setAuthorName(e.target.value)} style={{ width: '100%', padding: '6px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '12px' }} required />
+              <form onSubmit={handleAddComment} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                  <div>
+                    <label style={{ fontSize: '11px', color: '#64748b', display: 'block', marginBottom: '4px', fontWeight: 'bold' }}>작성자</label>
+                    <input 
+                      type="text" 
+                      value={authorName} 
+                      readOnly 
+                      style={{ width: '100%', padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '12px', background: '#e2e8f0', color: '#475569', boxSizing: 'border-box', cursor: 'not-allowed' }} 
+                    />
                   </div>
-                  <div style={{ flex: 1 }}>
-                    <label style={{ fontSize: '11px', color: '#64748b', display: 'block', marginBottom: '2px' }}>대상 음원</label>
-                    <select value={selectedTrack} onChange={(e) => setSelectedTrack(e.target.value)} style={{ width: '100%', padding: '6px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '12px' }}>
+                  <div>
+                    <label style={{ fontSize: '11px', color: '#64748b', display: 'block', marginBottom: '4px', fontWeight: 'bold' }}>대상 음원</label>
+                    <select 
+                      value={selectedTrack} 
+                      onChange={(e) => setSelectedTrack(e.target.value)} 
+                      style={{ width: '100%', padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '12px', background: '#fff', boxSizing: 'border-box', height: '33px' }}
+                    >
                       {tracks.map((t) => (<option key={t.id} value={t.id}>{t.track_name}</option>))}
                     </select>
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <div style={{ flex: 1 }}>
-                    <label style={{ fontSize: '11px', color: '#64748b', display: 'block', marginBottom: '2px' }}>시작점 (초)</label>
-                    <input type="number" step="0.1" value={startTime} onChange={(e) => setStartTime(e.target.value)} style={{ width: '100%', padding: '6px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '12px' }} required />
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                  <div>
+                    <label style={{ fontSize: '11px', color: '#64748b', display: 'block', marginBottom: '4px', fontWeight: 'bold' }}>시작점 (초)</label>
+                    <input 
+                      type="number" 
+                      step="0.1" 
+                      value={startTime} 
+                      onChange={(e) => setStartTime(e.target.value)} 
+                      style={{ width: '100%', padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '12px', boxSizing: 'border-box' }} 
+                      required 
+                    />
                   </div>
-                  <div style={{ flex: 1 }}>
-                    <label style={{ fontSize: '11px', color: '#64748b', display: 'block', marginBottom: '2px' }}>종료점 (초)</label>
-                    <input type="number" step="0.1" value={endTime} onChange={(e) => setEndTime(e.target.value)} style={{ width: '100%', padding: '6px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '12px' }} required />
+                  <div>
+                    <label style={{ fontSize: '11px', color: '#64748b', display: 'block', marginBottom: '4px', fontWeight: 'bold' }}>종료점 (초)</label>
+                    <input 
+                      type="number" 
+                      step="0.1" 
+                      value={endTime} 
+                      onChange={(e) => setEndTime(e.target.value)} 
+                      style={{ width: '100%', padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '12px', boxSizing: 'border-box' }} 
+                      required 
+                    />
                   </div>
                 </div>
 
                 <div>
-                  <label style={{ fontSize: '11px', color: '#64748b', display: 'block', marginBottom: '2px' }}>의견 내용</label>
-                  <textarea value={newCommentText} onChange={(e) => setNewCommentText(e.target.value)} placeholder="의견을 적어주세요..." style={{ width: '100%', height: '60px', padding: '6px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '12px', resize: 'none' }} required />
+                  <label style={{ fontSize: '11px', color: '#64748b', display: 'block', marginBottom: '4px', fontWeight: 'bold' }}>의견 내용</label>
+                  <textarea 
+                    value={newCommentText} 
+                    onChange={(e) => setNewCommentText(e.target.value)} 
+                    placeholder="의견을 적어주세요..." 
+                    style={{ width: '100%', height: '64px', padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '12px', resize: 'none', boxSizing: 'border-box' }} 
+                    required 
+                  />
                 </div>
 
                 <button type="submit" style={{ padding: '8px', background: '#0f172a', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}>
@@ -1303,7 +1322,6 @@ export default function App() {
               </form>
             </div>
 
-            {/* {수정 5-11} 계층형 대댓글 및 Good, Bad, Not Bad, 이모티콘 반응이 반영된 피드백 목록 영역 */}
             <div style={{ padding: '16px', background: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', height: '420px' }}>
               <h3 style={{ fontSize: '15px', fontWeight: 'bold', color: '#1e293b', marginBottom: '12px' }}>
                 📋 피드백 목록 ({comments.length})
@@ -1324,7 +1342,6 @@ export default function App() {
                     return (
                       <div key={c.id} style={{ padding: '12px', background: '#fff', borderRadius: '8px', border: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                         
-                        {/* 최상위 피드백 본문 (클릭 시 해당 시간대로 이동) */}
                         <div onClick={() => handleSeek(Number(c.start_time || 0))} style={{ cursor: 'pointer' }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -1340,7 +1357,6 @@ export default function App() {
                           <p style={{ fontSize: '12px', color: '#334155', margin: 0 }}>{c.content}</p>
                         </div>
 
-                        {/* Good, Bad, Not Bad 및 이모티콘 반응 버튼 바 */}
                         <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', alignItems: 'center', marginTop: '4px', paddingTop: '6px', borderTop: '1px dashed #f1f5f9' }}>
                           {['Good', 'Bad', 'Not Bad', '👍', '🔥', '❤️', '👏'].map((type) => {
                             const count = Array.isArray(reactions[type]) ? reactions[type].length : 0;
@@ -1373,7 +1389,6 @@ export default function App() {
                           </button>
                         </div>
 
-                        {/* 대댓글 입력 폼 토글 영역 */}
                         {replyingCommentId === c.id && (
                           <div style={{ display: 'flex', gap: '4px', marginTop: '6px', paddingLeft: '12px' }}>
                             <input 
@@ -1392,7 +1407,6 @@ export default function App() {
                           </div>
                         )}
 
-                        {/* 하위 대댓글 목록 출력 영역 */}
                         {replies.length > 0 && ( 
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px', paddingLeft: '16px', borderLeft: '2px solid #e2e8f0' }}>
                             {replies.map((r) => (
@@ -1407,7 +1421,7 @@ export default function App() {
                           </div>
                         )}
 
-                      </div>
+                      </div> 
                     );
                   })
                 )}
