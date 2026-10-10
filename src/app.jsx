@@ -33,9 +33,16 @@ export default function App() {
   const [autoRefreshInterval, setAutoRefreshInterval] = useState('none');
 
   // 5. 오디오 재생 및 타임라인 상태
-  const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+
+  // 재생 방식 체크박스 상태 ('all' | 'sequential' | 'none') 및 메인 재생 상태
+  const [playMode, setPlayMode] = useState('none'); 
+  const [isMainPlaying, setIsMainPlaying] = useState(false);
+  const [activeSequentialTrackId, setActiveSequentialTrackId] = useState(null);
+
+  // 개별 트랙 재생 상태 관리 객체 (trackId: boolean)
+  const [trackPlayingStates, setTrackPlayingStates] = useState({});
 
   // 6. 트랙 리스트
   const [tracks, setTracks] = useState([]);
@@ -48,7 +55,7 @@ export default function App() {
   const [startTime, setStartTime] = useState(0);
   const [endTime, setEndTime] = useState(0);
 
-  // {수정 5-11} 대댓글 입력 상태 관리
+  // 대댓글 입력 상태 관리
   const [replyingCommentId, setReplyingCommentId] = useState(null);
   const [replyText, setReplyText] = useState('');
 
@@ -377,7 +384,7 @@ export default function App() {
       .from('tracks')
       .select('*')
       .eq('portfolio_id', portfolio.id)
-      .order('created_at', { ascending: true });
+      .order('order', { ascending: true });
 
     if (trackData && trackData.length > 0) {
       setTracks(trackData);
@@ -493,7 +500,7 @@ export default function App() {
     let isMounted = true;
     const sortedTracks = [...tracks].sort((a, b) => (a.order || 0) - (b.order || 0));
 
-    sortedTracks.forEach((track) => {
+    sortedTracks.forEach((track, index) => {
       const container = containerRefs.current[track.id];
       if (!container) return;
 
@@ -535,24 +542,161 @@ export default function App() {
         setEndTime(Number(clickedTime.toFixed(2)));
         setSelectedTrack(track.id);
       });
+
+      ws.on('play', () => {
+        if (!isMounted) return;
+        setTrackPlayingStates(prev => ({ ...prev, [track.id]: true }));
+      });
+
+      ws.on('pause', () => {
+        if (!isMounted) return;
+        setTrackPlayingStates(prev => ({ ...prev, [track.id]: false }));
+      });
+
+      ws.on('finish', () => {
+        if (!isMounted) return;
+        setTrackPlayingStates(prev => ({ ...prev, [track.id]: false }));
+
+        if (playMode === 'sequential') {
+          const currentTracks = [...trackListRef.current].sort((a, b) => (a.order || 0) - (b.order || 0));
+          const nextIndex = index + 1;
+          if (nextIndex < currentTracks.length) {
+            const nextTrack = currentTracks[nextIndex];
+            setActiveSequentialTrackId(nextTrack.id);
+            const nextWs = wavesurferRefs.current[nextTrack.id];
+            if (nextWs) {
+              nextWs.play();
+            }
+          } else {
+            setIsMainPlaying(false);
+            setActiveSequentialTrackId(null);
+          }
+        }
+      });
     });
 
     return () => {
       isMounted = false;
       Object.values(wavesurferRefs.current).forEach((ws) => ws?.destroy());
     };
-  }, [tracks, currentPortfolioId]);
+  }, [tracks, currentPortfolioId, playMode]);
 
-  const handleMasterPlayPause = () => {
-    const nextState = !isPlaying;
-    setIsPlaying(nextState);
+  // 체크박스 클릭 핸들러 (전체재생 또는 순차재생 선택)
+  const handlePlayModeChange = (mode) => {
+    const newMode = playMode === mode ? 'none' : mode;
+    setPlayMode(newMode);
 
-    Object.values(wavesurferRefs.current).forEach((ws) => {
-      if (ws) {
-        if (nextState) ws.play();
-        else ws.pause();
+    if (newMode === 'none') {
+      setIsMainPlaying(false);
+      setActiveSequentialTrackId(null);
+      Object.values(wavesurferRefs.current).forEach((ws) => {
+        if (ws) ws.pause();
+      });
+    } else {
+      // 체크박스 선택 시 자동으로 재생 상태로 전환
+      setIsMainPlaying(true);
+      if (newMode === 'all') {
+        setActiveSequentialTrackId(null);
+        Object.values(wavesurferRefs.current).forEach((ws) => {
+          if (ws) ws.play();
+        });
+      } else if (newMode === 'sequential') {
+        if (tracks.length === 0) {
+          alert('재생할 음원이 없습니다.');
+          setPlayMode('none');
+          setIsMainPlaying(false);
+          return;
+        }
+        const sortedTracks = [...tracks].sort((a, b) => (a.order || 0) - (b.order || 0));
+        const firstTrack = sortedTracks[0];
+        setActiveSequentialTrackId(firstTrack.id);
+
+        Object.entries(wavesurferRefs.current).forEach(([id, ws]) => {
+          if (ws) {
+            if (id === firstTrack.id) {
+              ws.play();
+            } else {
+              ws.pause();
+              ws.setTime(0);
+            }
+          }
+        });
       }
-    });
+    }
+  };
+
+  // 메인 재생/정지 토글 버튼 핸들러
+  const handleMainPlayPauseToggle = () => {
+    if (playMode === 'none') {
+      alert('재생 방식을 체크박스(전체재생 또는 순차재생)에서 먼저 선택해주세요.');
+      return;
+    }
+
+    const nextState = !isMainPlaying;
+    setIsMainPlaying(nextState);
+
+    if (nextState) {
+      // 재생 시작
+      if (playMode === 'all') {
+        Object.values(wavesurferRefs.current).forEach((ws) => {
+          if (ws) ws.play();
+        });
+      } else if (playMode === 'sequential') {
+        const sortedTracks = [...tracks].sort((a, b) => (a.order || 0) - (b.order || 0));
+        const targetId = activeSequentialTrackId || sortedTracks[0]?.id;
+        if (targetId) {
+          setActiveSequentialTrackId(targetId);
+          const ws = wavesurferRefs.current[targetId];
+          if (ws) ws.play();
+        }
+      }
+    } else {
+      // 정지
+      Object.values(wavesurferRefs.current).forEach((ws) => {
+        if (ws) ws.pause();
+      });
+    }
+  };
+
+  const handleToggleTrackPlay = (trackId) => {
+    const ws = wavesurferRefs.current[trackId];
+    if (!ws) return;
+
+    if (ws.isPlaying()) {
+      ws.pause();
+    } else {
+      ws.play();
+    }
+  };
+
+  const handleMoveTrackOrder = async (index, direction) => {
+    const sortedTracks = [...tracks].sort((a, b) => (a.order || 0) - (b.order || 0));
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+
+    if (targetIndex < 0 || targetIndex >= sortedTracks.length) return;
+
+    const temp = sortedTracks[index];
+    sortedTracks[index] = sortedTracks[targetIndex];
+    sortedTracks[targetIndex] = temp;
+
+    const updatedTracks = sortedTracks.map((t, idx) => ({
+      ...t,
+      order: idx + 1
+    }));
+
+    setTracks(updatedTracks);
+
+    try {
+      for (const t of updatedTracks) {
+        await supabase
+          .from('tracks')
+          .update({ order: t.order })
+          .eq('id', t.id);
+      }
+    } catch (err) {
+      console.error('트랙 순서 변경 DB 저장 실패:', err);
+      alert('순서 변경 저장 중 오류가 발생했습니다.');
+    }
   };
 
   const handleToggleMute = (trackId) => {
@@ -581,12 +725,10 @@ export default function App() {
 
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        // 파일 이름이 겹치지 않도록 유니크한 파일명 생성
         const fileExt = file.name.split('.').pop();
         const fileName = `${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${fileExt}`;
         const filePath = `${currentPortfolioId}/${fileName}`;
 
-        // 1. Supabase Storage에 파일 업로드 ('audio_files' 버킷에 업로드)
         const { error: uploadError } = await supabase.storage
           .from('audio_files')
           .upload(filePath, file);
@@ -595,14 +737,12 @@ export default function App() {
           throw new Error(`파일 업로드 실패 (${file.name}): ${uploadError.message}`);
         }
 
-        // 2. 업로드된 파일의 Public(공개) URL 가져오기
         const { data: publicUrlData } = supabase.storage
           .from('audio_files')
           .getPublicUrl(filePath);
 
         const publicUrl = publicUrlData.publicUrl;
 
-        // 3. DB에 저장할 트랙 데이터 객체 생성 (CORS 문제 해결된 퍼블릭 URL 사용)
         newTracksPayload.push({
           portfolio_id: currentPortfolioId,
           track_name: file.name,
@@ -612,7 +752,6 @@ export default function App() {
         });
       }
 
-      // 4. tracks 테이블에 일괄 Insert
       const { data, error } = await supabase.from('tracks').insert(newTracksPayload).select();
 
       if (error) {
@@ -1077,7 +1216,7 @@ export default function App() {
                       <td style={{ padding: '8px' }}>{f.content}</td>
                       <td style={{ padding: '8px' }}>{f.created_at ? new Date(f.created_at).toLocaleString() : '-'}</td>
                       <td style={{ padding: '8px' }}>
-                        <button onClick={() => handleToggleViewYn('feedbacks', f.id, f.view_yn || 'Y')} style={{ padding: '4px 8px', background: (f.view_yn || 'Y') !== 'N' ? '#10b981' : '#ef4444', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
+                        <button onClick={() => handleToggleViewYn('feedbacks', f.id, f.view_yn || 'Y')} style={{ padding: '4px 8px', background: (p.view_yn || 'Y') !== 'N' ? '#10b981' : '#ef4444', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
                           {(f.view_yn || 'Y') !== 'N' ? 'Y (사용 중)' : 'N (중지됨)'}
                         </button>
                       </td>
@@ -1204,7 +1343,7 @@ export default function App() {
                 🎵 현재 포트폴리오: <span style={{ color: '#4f46e5' }}>{portfolioName} ({portfolioOwnerEmail})</span>
               </h2>
               <label style={{ padding: '6px 12px', background: '#3b82f6', color: '#fff', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px', display: 'inline-block' }}>
-                📁 음원 추가하기 (CORS 안전 샘플)
+                📁 음원 추가하기 (Supabase Storage)
                 <input type="file" multiple accept="audio/*" onChange={handleMultipleUpload} style={{ display: 'none' }} />
               </label>
             </div>
@@ -1248,10 +1387,37 @@ export default function App() {
             </div>
           </div>
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', padding: '12px 18px', background: '#f1f5f9', borderRadius: '12px' }}>
-            <button onClick={handleMasterPlayPause} style={{ padding: '10px 16px', background: isPlaying ? '#ef4444' : '#6366f1', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px' }}>
-              {isPlaying ? '⏸ 전체 일시정지' : '▶ 전체 동시 재생'}
-            </button>
+          {/* {수정 5-16} 체크박스 바로 다음에 메인 재생/정지(>/II) 버튼 생성 */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', padding: '12px 18px', background: '#f1f5f9', borderRadius: '12px', flexWrap: 'wrap', gap: '10px' }}>
+            <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px', color: '#1e293b' }}>
+                <input 
+                  type="checkbox" 
+                  checked={playMode === 'all'} 
+                  onChange={() => handlePlayModeChange('all')} 
+                  style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+                />
+                전체재생
+              </label>
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px', color: '#1e293b' }}>
+                <input 
+                  type="checkbox" 
+                  checked={playMode === 'sequential'} 
+                  onChange={() => handlePlayModeChange('sequential')} 
+                  style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+                />
+                순차재생
+              </label>
+
+              <button 
+                onClick={handleMainPlayPauseToggle}
+                style={{ padding: '8px 16px', background: isMainPlaying ? '#ef4444' : '#4f46e5', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' }}
+              >
+                {isMainPlaying ? '메인 정지 (II)' : '메인 재생 (>)'}
+              </button>
+            </div>
+
             <span style={{ fontFamily: 'monospace', fontSize: '16px', fontWeight: 'bold', color: '#333' }}>
               {formatTime(currentTime)} / {formatTime(duration)}
             </span>
@@ -1263,20 +1429,57 @@ export default function App() {
                 등록된 음원이 없습니다.
               </div>
             ) : (
-              sortedTracks.map((track) => (
-                <div key={track.id} style={{ padding: '14px', background: '#fafafa', borderRadius: '12px', border: '1px solid #e5e7eb' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <span style={{ fontSize: '12px', fontWeight: 'bold', background: '#dbeafe', color: '#1e40af', padding: '2px 6px', borderRadius: '4px' }}>음원</span>
-                      <span style={{ fontSize: '15px', fontWeight: 'bold', color: '#222' }}>{track.track_name}</span>
+              sortedTracks.map((track, index) => {
+                const isCurrentSeq = activeSequentialTrackId === track.id;
+                const isTrackPlaying = !!trackPlayingStates[track.id];
+
+                return (
+                  <div key={track.id} style={{ padding: '14px', background: isCurrentSeq ? '#ecfdf5' : '#fafafa', borderRadius: '12px', border: `1px solid ${isCurrentSeq ? '#10b981' : '#e5e7eb'}` }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontSize: '12px', fontWeight: 'bold', background: '#dbeafe', color: '#1e40af', padding: '2px 6px', borderRadius: '4px' }}>음원 {index + 1}</span>
+                        <span style={{ fontSize: '15px', fontWeight: 'bold', color: '#222' }}>{track.track_name}</span>
+                        {isCurrentSeq && <span style={{ fontSize: '11px', background: '#10b981', color: '#fff', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>🔊 재생 중</span>}
+                      </div>
+                      
+                      <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                        {/* 개별 재생/정지 버튼 (재생/정지(>/II)) */}
+                        <button 
+                          onClick={() => handleToggleTrackPlay(track.id)}
+                          style={{ padding: '4px 12px', background: isTrackPlaying ? '#ef4444' : '#10b981', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '12px', cursor: 'pointer', fontWeight: 'bold' }}
+                        >
+                          {isTrackPlaying ? '정지 (II)' : '재생 (>)'}
+                        </button>
+
+                        {/* 순서 변경 버튼 (위로 / 아래로) */}
+                        <div style={{ display: 'flex', gap: '2px' }}>
+                          <button 
+                            onClick={() => handleMoveTrackOrder(index, 'up')} 
+                            disabled={index === 0}
+                            style={{ padding: '3px 7px', background: index === 0 ? '#cbd5e1' : '#4f46e5', color: '#fff', border: 'none', borderRadius: '4px', fontSize: '11px', cursor: index === 0 ? 'not-allowed' : 'pointer', fontWeight: 'bold' }}
+                            title="위로 이동"
+                          >
+                            ▲ 위로
+                          </button>
+                          <button 
+                            onClick={() => handleMoveTrackOrder(index, 'down')} 
+                            disabled={index === sortedTracks.length - 1}
+                            style={{ padding: '3px 7px', background: index === sortedTracks.length - 1 ? '#cbd5e1' : '#4f46e5', color: '#fff', border: 'none', borderRadius: '4px', fontSize: '11px', cursor: index === sortedTracks.length - 1 ? 'not-allowed' : 'pointer', fontWeight: 'bold' }}
+                            title="아래로 이동"
+                          >
+                            ▼ 아래로
+                          </button>
+                        </div>
+
+                        <button onClick={() => handleToggleMute(track.id)} style={{ padding: '4px 10px', background: track.muted ? '#ef4444' : '#e5e7eb', color: track.muted ? '#fff' : '#374151', border: 'none', borderRadius: '6px', fontSize: '12px', cursor: 'pointer', fontWeight: 'bold' }}>
+                          {track.muted ? '🔇 음소거 해제' : '🔊 음소거'}
+                        </button>
+                      </div>
                     </div>
-                    <button onClick={() => handleToggleMute(track.id)} style={{ padding: '4px 10px', background: track.muted ? '#ef4444' : '#e5e7eb', color: track.muted ? '#fff' : '#374151', border: 'none', borderRadius: '6px', fontSize: '12px', cursor: 'pointer', fontWeight: 'bold' }}>
-                      {track.muted ? '🔇 음소거 해제' : '🔊 음소거'}
-                    </button>
+                    <div ref={(el) => (containerRefs.current[track.id] = el)} style={{ width: '100%', background: '#fff', borderRadius: '6px', overflow: 'hidden' }} />
                   </div>
-                  <div ref={(el) => (containerRefs.current[track.id] = el)} style={{ width: '100%', background: '#fff', borderRadius: '6px', overflow: 'hidden' }} />
-                </div>
-              ))
+                );
+              })
             )}
           </div>
 
