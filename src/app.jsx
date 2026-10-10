@@ -48,6 +48,10 @@ export default function App() {
   const [startTime, setStartTime] = useState(0);
   const [endTime, setEndTime] = useState(0);
 
+  // {수정 5-11} 대댓글 입력 상태 관리
+  const [replyingCommentId, setReplyingCommentId] = useState(null);
+  const [replyText, setReplyText] = useState('');
+
   const wavesurferRefs = useRef({});
   const containerRefs = useRef({});
   const trackListRef = useRef(tracks);
@@ -352,6 +356,22 @@ export default function App() {
     }
   };
 
+  // 피드백 및 대댓글 목록 조회 공통 함수
+  const fetchFeedbacksAndReplies = async (portfolioId) => {
+    const { data: feedbackData } = await supabase
+      .from('feedbacks')
+      .select(`*, tracks (track_name)`)
+      .eq('portfolio_id', portfolioId);
+
+    if (feedbackData) {
+      const filtered = isAdmin ? feedbackData : feedbackData.filter(f => f.view_yn !== 'N');
+      const sorted = filtered.sort((a, b) => (a.start_time || 0) - (b.start_time || 0));
+      setComments(sorted);
+    } else {
+      setComments([]);
+    }
+  };
+
   const handleLoadPortfolio = async (portfolio) => {
     setCurrentPortfolioId(portfolio.id);
     setPortfolioName(portfolio.portfolio_name);
@@ -601,25 +621,83 @@ export default function App() {
       start_time: Number(Number(startTime).toFixed(2)),
       end_time: Number(Number(endTime).toFixed(2)),
       content: newCommentText,
-      view_yn: 'Y'
+      view_yn: 'Y',
+      parent_id: null,
+      reactions: {}
     };
 
-    const { data, error } = await supabase.from('feedbacks').insert([newComment]).select();
+    const { error } = await supabase.from('feedbacks').insert([newComment]);
 
     if (error) {
-      alert('피드백 저장 중 오류 발생');
+      alert('피드백 저장 중 오류 발생: ' + error.message);
     } else {
-      if (data && data.length > 0) {
-        const targetTrack = tracks.find((t) => t.id === selectedTrack);
-        const commentWithTrack = {
-          ...data[0],
-          tracks: { track_name: targetTrack ? targetTrack.track_name : '알 수 없는 음원' }
-        };
-
-        setComments((prev) => [...prev, commentWithTrack].sort((a, b) => a.start_time - b.start_time));
-        fetchMyPortfolios(user, isAdmin);
-      }
       setNewCommentText('');
+      await fetchFeedbacksAndReplies(currentPortfolioId);
+      fetchMyPortfolios(user, isAdmin);
+    }
+  };
+
+  // {수정 5-11} 1) 대댓글 등록 핸들러
+  const handleAddReply = async (parentFeedbackId) => {
+    if (!replyText.trim() || !currentPortfolioId) return;
+
+    const parentComment = comments.find(c => c.id === parentFeedbackId);
+
+    const newReply = {
+      portfolio_id: currentPortfolioId,
+      user_id: user.id,
+      author: authorName,
+      track_id: parentComment ? parentComment.track_id : selectedTrack,
+      start_time: parentComment ? parentComment.start_time : 0,
+      end_time: parentComment ? parentComment.end_time : 0,
+      content: replyText,
+      view_yn: 'Y',
+      parent_id: parentFeedbackId,
+      reactions: {}
+    };
+
+
+    const { error } = await supabase.from('feedbacks').insert([newReply]);
+
+    if (error) {
+      alert('답글 등록 실패: ' + error.message);
+    } else {
+      setReplyText('');
+      setReplyingCommentId(null);
+      await fetchFeedbacksAndReplies(currentPortfolioId);
+    }
+  };
+
+  // {수정 5-11} 2) Good, Bad, Not Bad 및 이모티콘 반응 토글 핸들러
+  const handleReaction = async (comment, reactionType) => {
+    let currentReactions = comment.reactions || {};
+    if (typeof currentReactions === 'string') {
+      try { currentReactions = JSON.parse(currentReactions); } catch(e) { currentReactions = {}; }
+    }
+
+    let usersList = currentReactions[reactionType] || [];
+    if (!Array.isArray(usersList)) usersList = [];
+
+    if (usersList.includes(user.email)) {
+      usersList = usersList.filter(email => email !== user.email);
+    } else {
+      usersList.push(user.email);
+    }
+
+    const updatedReactions = {
+      ...currentReactions,
+      [reactionType]: usersList
+    };
+
+    const { error } = await supabase
+      .from('feedbacks')
+      .update({ reactions: updatedReactions })
+      .eq('id', comment.id);
+
+    if (!error) {
+      await fetchFeedbacksAndReplies(currentPortfolioId);
+    } else {
+      alert('반응 저장 실패: ' + error.message);
     }
   };
 
@@ -736,6 +814,10 @@ export default function App() {
   const maxTimeSeriesVal = Math.max(...timeSeriesData.map(s => Math.max(s.pCount, s.mCount, s.fCount)), 1);
 
   const sortedTracks = [...tracks].sort((a, b) => (a.order || 0) - (b.order || 0));
+
+  // {수정 5-11} 루트 댓글과 대댓글 분류
+  const rootComments = comments.filter(c => !c.parent_id);
+  const getReplies = (parentId) => comments.filter(c => c.parent_id === parentId);
 
   if (!user) {
     return (
@@ -1218,32 +1300,113 @@ export default function App() {
               </form>
             </div>
 
-            <div style={{ padding: '16px', background: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', height: '320px' }}>
+            {/* {수정 5-11} 계층형 대댓글 및 Good, Bad, Not Bad, 이모티콘 반응이 반영된 피드백 목록 영역 */}
+            <div style={{ padding: '16px', background: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', height: '420px' }}>
               <h3 style={{ fontSize: '15px', fontWeight: 'bold', color: '#1e293b', marginBottom: '12px' }}>
                 📋 피드백 목록 ({comments.length})
               </h3>
-              <div style={{ overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: '8px', paddingRight: '4px' }}>
-                {comments.length === 0 ? (
+              <div style={{ overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: '10px', paddingRight: '4px' }}>
+                {rootComments.length === 0 ? (
                   <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: '13px', marginTop: '60px' }}>
                     등록된 피드백이 없습니다.
                   </div>
                 ) : (
-                  comments.map((c) => (
-                    <div key={c.id} onClick={() => handleSeek(Number(c.start_time || 0))} style={{ padding: '10px', background: '#fff', borderRadius: '8px', cursor: 'pointer', border: '1px solid #e2e8f0' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px', flexWrap: 'wrap', gap: '4px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#4f46e5' }}>{c.author}</span>
-                          <span style={{ fontSize: '10px', background: '#f1f5f9', color: '#475569', padding: '1px 6px', borderRadius: '4px', border: '1px solid #cbd5e1' }}>
-                            🎵 {c.tracks?.track_name || '음원 정보 없음'}
-                          </span>
+                  rootComments.map((c) => {
+                    const replies = getReplies(c.id);
+                    let reactions = c.reactions || {};
+                    if (typeof reactions === 'string') {
+                      try { reactions = JSON.parse(reactions); } catch(e) { reactions = {}; }
+                    }
+
+                    return (
+                      <div key={c.id} style={{ padding: '12px', background: '#fff', borderRadius: '8px', border: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        
+                        {/* 최상위 피드백 본문 (클릭 시 해당 시간대로 이동) */}
+                        <div onClick={() => handleSeek(Number(c.start_time || 0))} style={{ cursor: 'pointer' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#4f46e5' }}>{c.author}</span>
+                              <span style={{ fontSize: '10px', background: '#f1f5f9', color: '#475569', padding: '1px 6px', borderRadius: '4px', border: '1px solid #cbd5e1' }}>
+                                🎵 {c.tracks?.track_name || '음원'}
+                              </span>
+                            </div>
+                            <span style={{ fontSize: '10px', fontFamily: 'monospace', background: '#e0e7ff', color: '#3730a3', padding: '1px 4px', borderRadius: '4px' }}>
+                              {formatTime(Number(c.start_time || 0))} ~ {formatTime(Number(c.end_time || c.start_time || 0))}
+                            </span>
+                          </div>
+                          <p style={{ fontSize: '12px', color: '#334155', margin: 0 }}>{c.content}</p>
                         </div>
-                        <span style={{ fontSize: '10px', fontFamily: 'monospace', background: '#e0e7ff', color: '#3730a3', padding: '1px 4px', borderRadius: '4px' }}>
-                          {formatTime(Number(c.start_time || 0))} ~ {formatTime(Number(c.end_time || c.start_time || 0))}
-                        </span>
+
+                        {/* Good, Bad, Not Bad 및 이모티콘 반응 버튼 바 */}
+                        <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', alignItems: 'center', marginTop: '4px', paddingTop: '6px', borderTop: '1px dashed #f1f5f9' }}>
+                          {['Good', 'Bad', 'Not Bad', '👍', '🔥', '❤️', '👏'].map((type) => {
+                            const count = Array.isArray(reactions[type]) ? reactions[type].length : 0;
+                            const isMyReaction = Array.isArray(reactions[type]) && reactions[type].includes(user.email);
+                            return (
+                              <button 
+                                key={type} 
+                                onClick={() => handleReaction(c, type)} 
+                                style={{ 
+                                  fontSize: '11px', 
+                                  padding: '2px 6px', 
+                                  borderRadius: '6px', 
+                                  border: '1px solid #cbd5e1', 
+                                  background: isMyReaction ? '#e0e7ff' : '#f8fafc',
+                                  color: isMyReaction ? '#3730a3' : '#475569',
+                                  cursor: 'pointer',
+                                  fontWeight: isMyReaction ? 'bold' : 'normal'
+                                }}
+                              >
+                                {type} {count > 0 ? count : ''}
+                              </button>
+                            );
+                          })}
+
+                          <button 
+                            onClick={() => setReplyingCommentId(replyingCommentId === c.id ? null : c.id)}
+                            style={{ marginLeft: 'auto', fontSize: '11px', background: 'none', border: 'none', color: '#4f46e5', cursor: 'pointer', fontWeight: 'bold' }}
+                          >
+                            💬 답글달기
+                          </button>
+                        </div>
+
+                        {/* 대댓글 입력 폼 토글 영역 */}
+                        {replyingCommentId === c.id && (
+                          <div style={{ display: 'flex', gap: '4px', marginTop: '6px', paddingLeft: '12px' }}>
+                            <input 
+                              type="text" 
+                              placeholder="답글을 입력하세요..." 
+                              value={replyText} 
+                              onChange={(e) => setReplyText(e.target.value)}
+                              style={{ flex: 1, padding: '4px 8px', fontSize: '11px', border: '1px solid #cbd5e1', borderRadius: '4px' }}
+                            />
+                            <button 
+                              onClick={() => handleAddReply(c.id)}
+                              style={{ padding: '4px 8px', background: '#4f46e5', color: '#fff', border: 'none', borderRadius: '4px', fontSize: '11px', cursor: 'pointer', fontWeight: 'bold' }}
+                            >
+                              등록
+                            </button>
+                          </div>
+                        )}
+
+                        {/* 하위 대댓글 목록 출력 영역 */}
+                        {replies.length > 0 && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px', paddingLeft: '16px', borderLeft: '2px solid #e2e8f0' }}>
+                            {replies.map((r) => (
+                              <div key={r.id} style={{ padding: '6px 8px', background: '#f8fafc', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
+                                  <span style={{ fontSize: '10px', fontWeight: 'bold', color: '#4f46e5' }}>↳ {r.author}</span>
+                                  <span style={{ fontSize: '9px', color: '#94a3b8' }}>{new Date(r.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                                </div>
+                                <p style={{ fontSize: '11px', color: '#334155', margin: 0 }}>{r.content}</p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
                       </div>
-                      <p style={{ fontSize: '12px', color: '#334155', margin: 0 }}>{c.content}</p>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             </div>
