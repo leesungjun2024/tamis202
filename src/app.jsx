@@ -148,57 +148,90 @@ export default function App() {
     setActiveTab('portfolio');
   };
 
+  // 포트폴리오 목록 조회 시 멤버 및 피드백 개수까지 함게 로드하도록 개선
   const fetchMyPortfolios = async (userObj, adminFlag) => {
     if (!userObj) return;
 
     try {
+      let rawPortfolios = [];
+
       if (adminFlag) {
         const { data, error } = await supabase
           .from('portfolios')
           .select('*')
           .order('created_at', { ascending: false });
-        if (!error && data) setMyPortfolios(data);
+        if (!error && data) rawPortfolios = data;
+      } else {
+        const { data: myOwnedData, error: myError } = await supabase
+          .from('portfolios')
+          .select('*')
+          .eq('user_id', userObj.id);
+
+        if (myError) throw myError;
+
+        const { data: invitedMemberData, error: memberError } = await supabase
+          .from('portfolio_members')
+          .select('portfolio_id')
+          .eq('member_email', userObj.email);
+
+        if (memberError) throw memberError;
+
+        const invitedIds = (invitedMemberData || []).map((m) => m.portfolio_id);
+
+        let invitedPortfolios = [];
+        if (invitedIds.length > 0) {
+          const { data: invitedData, error: invitedError } = await supabase
+            .from('portfolios')
+            .select('*')
+            .in('id', invitedIds);
+
+          if (!invitedError && invitedData) {
+            invitedPortfolios = invitedData;
+          }
+        }
+
+        const combinedMap = new Map();
+        [...(myOwnedData || []), ...invitedPortfolios].forEach((item) => {
+          if (item.view_yn !== 'N') {
+            combinedMap.set(item.id, item);
+          }
+        });
+
+        rawPortfolios = Array.from(combinedMap.values());
+      }
+
+      const portfolioIds = rawPortfolios.map((p) => p.id);
+
+      if (portfolioIds.length === 0) {
+        setMyPortfolios([]);
         return;
       }
 
-      const { data: myOwnedData, error: myError } = await supabase
-        .from('portfolios')
-        .select('*')
-        .eq('user_id', userObj.id);
-
-      if (myError) throw myError;
-
-      const { data: invitedMemberData, error: memberError } = await supabase
+      // 각 포트폴리오별 멤버 및 피드백 정보 조회
+      const { data: membersData } = await supabase
         .from('portfolio_members')
-        .select('portfolio_id')
-        .eq('member_email', userObj.email);
+        .select('*')
+        .in('portfolio_id', portfolioIds);
 
-      if (memberError) throw memberError;
+      const { data: feedbacksData } = await supabase
+        .from('feedbacks')
+        .select('id, portfolio_id')
+        .in('portfolio_id', portfolioIds);
 
-      const invitedIds = (invitedMemberData || []).map((m) => m.portfolio_id);
+      const finalPortfolios = rawPortfolios.map((p) => {
+        const members = (membersData || []).filter((m) => m.portfolio_id === p.id);
+        const feedbackCount = (feedbacksData || []).filter((f) => f.portfolio_id === p.id).length;
+        const ownerEmail = (p.user_email && !p.user_email.includes('user_') && p.user_email.includes('@')) 
+          ? p.user_email 
+          : (userObj.email || '알 수 없음');
 
-      let invitedPortfolios = [];
-      if (invitedIds.length > 0) {
-        const { data: invitedData, error: invitedError } = await supabase
-          .from('portfolios')
-          .select('*')
-          .in('id', invitedIds);
-
-        if (!invitedError && invitedData) {
-          invitedPortfolios = invitedData;
-        }
-      }
-
-      const combinedMap = new Map();
-      [...(myOwnedData || []), ...invitedPortfolios].forEach((item) => {
-        if (item.view_yn !== 'N') {
-          combinedMap.set(item.id, item);
-        }
-      });
-
-      const finalPortfolios = Array.from(combinedMap.values()).sort(
-        (a, b) => new Date(b.created_at) - new Date(a.created_at)
-      );
+        return {
+          ...p,
+          user_email: ownerEmail,
+          invited_members: members.map((m) => m.member_email),
+          feedback_count: feedbackCount
+        };
+      }).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
       setMyPortfolios(finalPortfolios);
     } catch (err) {
@@ -228,9 +261,13 @@ export default function App() {
       const feedbackDates = pFeedbacks.map(f => new Date(f.updated_at || f.created_at || 0)).filter(d => !isNaN(d));
       const lastFeedbackDate = feedbackDates.length > 0 ? new Date(Math.max(...feedbackDates)) : null;
 
+      const ownerEmail = (p.user_email && !p.user_email.includes('user_') && p.user_email.includes('@')) 
+        ? p.user_email 
+        : (user?.email || '알 수 없음');
+
       return {
         ...p,
-        user_email: p.user_email || user?.email || '알 수 없음', // DB에 저장된 user_email 직접 활용
+        user_email: ownerEmail,
         member_count: 1 + pMembers.length,
         last_track_date: lastTrackDate ? lastTrackDate.toLocaleString() : '음원 없음',
         last_feedback_date: lastFeedbackDate ? lastFeedbackDate.toLocaleString() : '피드백 없음',
@@ -261,8 +298,6 @@ export default function App() {
   const handleLoadPortfolio = async (portfolio) => {
     setCurrentPortfolioId(portfolio.id);
     setPortfolioName(portfolio.portfolio_name);
-    
-    // portfolios 테이블에 저장된 user_email을 바로 설정
     setPortfolioOwnerEmail(portfolio.user_email || user?.email || '알 수 없음');
     setActiveTab('studio');
 
@@ -306,10 +341,16 @@ export default function App() {
     const title = prompt('새 포트폴리오 이름을 입력하세요:', '나의 새 포트폴리오');
     if (!title) return;
 
-    // 생성 시 user_id와 함께 user_email을 함께 저장
     const { data, error } = await supabase
       .from('portfolios')
-      .insert([{ portfolio_name: title, user_id: user.id, user_email: user.email, view_yn: 'Y' }])
+      .insert([
+        { 
+          portfolio_name: title, 
+          user_id: user.id, 
+          user_email: user.email, 
+          view_yn: 'Y' 
+        }
+      ])
       .select()
       .single();
 
@@ -323,22 +364,55 @@ export default function App() {
 
   const handleInviteMember = async (e) => {
     e.preventDefault();
-    if (!inviteEmail.trim() || !currentPortfolioId) return;
+    const trimmedEmail = inviteEmail.trim();
+    if (!trimmedEmail || !currentPortfolioId) return;
 
-    const { error } = await supabase
-      .from('portfolio_members')
-      .insert([{ portfolio_id: currentPortfolioId, member_email: inviteEmail, role: 'editor' }]);
-
-    if (error) {
-      alert('사용자 초대 실패');
-    } else {
-      alert(`${inviteEmail} 님을 초대했습니다!`);
+    if (trimmedEmail.toLowerCase() === portfolioOwnerEmail.toLowerCase()) {
+      alert(`이미 초대 된 사용자(${trimmedEmail}) 입니다.`);
       setInviteEmail('');
-      const { data } = await supabase
+      return;
+    }
+
+    const { data: dbMembers, error: dbError } = await supabase
+      .from('portfolio_members')
+      .select('member_email')
+      .eq('portfolio_id', currentPortfolioId);
+
+    if (dbError) {
+      alert('초대 목록 조회 중 오류가 발생했습니다.');
+      return;
+    }
+
+    const isAlreadyMember = (dbMembers || []).some(
+      (m) => m.member_email && m.member_email.toLowerCase() === trimmedEmail.toLowerCase()
+    );
+
+    if (isAlreadyMember) {
+      alert(`이미 초대 된 사용자(${trimmedEmail}) 입니다.`);
+      setInviteEmail('');
+      return;
+    }
+
+    const { error: insertError } = await supabase
+      .from('portfolio_members')
+      .insert([{ portfolio_id: currentPortfolioId, member_email: trimmedEmail, role: 'editor' }]);
+
+    if (insertError) {
+      if (insertError.code === '23505') {
+        alert(`이미 초대 된 사용자(${trimmedEmail}) 입니다.`);
+      } else {
+        alert('사용자 초대 실패: ' + insertError.message);
+      }
+    } else {
+      alert(`${trimmedEmail} 님을 초대했습니다!`);
+      setInviteEmail('');
+      
+      const { data: refreshedMembers } = await supabase
         .from('portfolio_members')
         .select('*')
         .eq('portfolio_id', currentPortfolioId);
-      setPortfolioMembers(data || []);
+      setPortfolioMembers(refreshedMembers || []);
+      fetchMyPortfolios(user, isAdmin);
     }
   };
 
@@ -486,6 +560,7 @@ export default function App() {
         };
 
         setComments((prev) => [...prev, commentWithTrack].sort((a, b) => a.start_time - b.start_time));
+        fetchMyPortfolios(user, isAdmin);
       }
       setNewCommentText('');
     }
@@ -547,6 +622,8 @@ export default function App() {
     );
   }
 
+  const isOwner = user.email === portfolioOwnerEmail;
+
   return (
     <div style={{ maxWidth: '1050px', margin: '30px auto', padding: '24px', background: '#fff', borderRadius: '16px', boxShadow: '0 4px 20px rgba(0,0,0,0.08)', fontFamily: 'sans-serif' }}>
       
@@ -558,7 +635,7 @@ export default function App() {
           님 접속중
         </div>
         <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-          <button onClick={() => setActiveTab('portfolio')} style={{ padding: '6px 10px', background: activeTab === 'portfolio' ? '#4f46e5' : '#e2e8f0', color: activeTab === 'portfolio' ? '#fff' : '#334155', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}>
+          <button onClick={() => { setActiveTab('portfolio'); fetchMyPortfolios(user, isAdmin); }} style={{ padding: '6px 10px', background: activeTab === 'portfolio' ? '#4f46e5' : '#e2e8f0', color: activeTab === 'portfolio' ? '#fff' : '#334155', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}>
             📁 포트폴리오 목록
           </button>
           <button onClick={() => {
@@ -681,12 +758,12 @@ export default function App() {
                 <thead>
                   <tr style={{ background: '#e2e8f0', textAlign: 'left' }}>
                     <th style={{ padding: '8px' }}>포트폴리오 명</th>
-                    <th style={{ padding: '8px' }}>이메일</th>
+                    <th style={{ padding: '8px' }}>이메일 (소유자)</th>
                     <th style={{ padding: '8px' }}>회원수</th>
                     <th style={{ padding: '8px' }}>최종 음원 조회일자</th>
                     <th style={{ padding: '8px' }}>최종 피드백 수정일자</th>
                     <th style={{ padding: '8px' }}>사용 여부</th>
-                    <th style={{ padding: '8px' }}>소유자</th>
+                    <th style={{ padding: '8px' }}>소유자 ID</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -780,7 +857,7 @@ export default function App() {
           </div>
         </div>
       ) : activeTab === 'portfolio' ? (
-        /* 포트폴리오 목록 탭 */
+        /* 포트폴리오 목록 탭 (소유자, 초대된 멤버, 피드백 총 개수 표시 추가) */
         <div style={{ padding: '20px 0' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
             <h2 style={{ fontSize: '20px', fontWeight: 'bold', color: '#1e293b', margin: 0 }}>📁 포트폴리오 목록</h2>
@@ -794,14 +871,39 @@ export default function App() {
               생성된 포트폴리오가 없습니다.
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               {myPortfolios.map((p) => (
-                <div key={p.id} style={{ padding: '16px', background: '#f1f5f9', borderRadius: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', border: '1px solid #e2e8f0' }}>
-                  <div>
-                    <span style={{ fontWeight: 'bold', color: '#1e293b', fontSize: '16px', display: 'block', marginBottom: '4px' }}>{p.portfolio_name}</span>
-                    <span style={{ fontSize: '12px', color: '#64748b' }}>생성일: {new Date(p.created_at).toLocaleDateString()}</span>
+                <div key={p.id} style={{ padding: '18px', background: '#f1f5f9', borderRadius: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', border: '1px solid #e2e8f0' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <span style={{ fontWeight: 'bold', color: '#1e293b', fontSize: '17px' }}>{p.portfolio_name}</span>
+                      <span style={{ fontSize: '11px', background: '#e0e7ff', color: '#3730a3', padding: '2px 8px', borderRadius: '12px', fontWeight: 'bold' }}>
+                        💬 피드백 {p.feedback_count || 0}개
+                      </span>
+                    </div>
+
+                    <div style={{ fontSize: '12px', color: '#475569', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                      <span style={{ fontWeight: 'bold', color: '#1e293b' }}>👑 소유자:</span>
+                      <span style={{ color: '#4f46e5', fontWeight: 'bold' }}>{p.user_email}</span>
+                      <span style={{ color: '#cbd5e1' }}>|</span>
+                      <span style={{ fontSize: '11px', color: '#94a3b8' }}>생성일: {new Date(p.created_at).toLocaleDateString()}</span>
+                    </div>
+
+                    <div style={{ fontSize: '12px', color: '#475569', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginTop: '2px' }}>
+                      <span style={{ fontWeight: 'bold', color: '#1e293b' }}>👥 초대된 멤버:</span>
+                      {p.invited_members && p.invited_members.length > 0 ? (
+                        p.invited_members.map((mEmail, idx) => (
+                          <span key={idx} style={{ background: '#fff', border: '1px solid #cbd5e1', padding: '1px 6px', borderRadius: '4px', fontSize: '11px', color: '#334155' }}>
+                            {mEmail}
+                          </span>
+                        ))
+                      ) : (
+                        <span style={{ color: '#94a3b8', fontSize: '11px' }}>초대된 멤버 없음</span>
+                      )}
+                    </div>
                   </div>
-                  <button onClick={() => handleLoadPortfolio(p)} style={{ padding: '8px 14px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}>
+
+                  <button onClick={() => handleLoadPortfolio(p)} style={{ padding: '10px 16px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px', whiteSpace: 'nowrap' }}>
                     📂 포트폴리오 열기 (스튜디오 진입)
                   </button>
                 </div>
@@ -827,12 +929,10 @@ export default function App() {
               <div>
                 <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#334155', marginRight: '8px' }}>👥 팀원 접속현황:</span>
                 
-                {/* 현재 접속 중인 사용자 (하이라이트 표시) */}
                 <span style={{ fontSize: '12px', background: '#dbeafe', color: '#1e40af', padding: '3px 8px', borderRadius: '6px', marginRight: '6px', fontWeight: 'bold', border: '1px solid #3b82f6' }}>
-                  🟢 {user.email} (현재 접속중)
+                  🟢 {user.email} ({isOwner ? '소유자' : 'editor'})
                 </span>
 
-                {/* 초대된 멤버 목록 (미접속자는 회색 처리) */}
                 {portfolioMembers.map((m) => {
                   if (m.member_email === user.email) return null;
                   return (
@@ -849,7 +949,7 @@ export default function App() {
                       }}
                       title="미접속"
                     >
-                      ⚪ {m.member_email} ({m.role})
+                      ⚪ {m.member_email} ({m.role || 'editor'})
                     </span>
                   );
                 })}
