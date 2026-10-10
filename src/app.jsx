@@ -63,7 +63,7 @@ export default function App() {
     return userEmail === 'admin@admin.com' || userEmail.startsWith('admin') || userEmail === 'krsungjun@gmail.com';
   };
 
-  const recordLoginLog = async (userEmail) => {
+ const recordLoginLog = async (userEmail) => {
     try {
       let ip = 'Unknown IP';
       let location = '대한민국 (Seoul)';
@@ -85,21 +85,24 @@ export default function App() {
       const currentLoginTime = new Date();
       const currentLoginTimeISO = currentLoginTime.toISOString();
 
-      // 요청사항 반영: 동일 IP이면서 logout_time이 null인 이전 세션들을 당일 00:00:00 시간으로 업데이트
-      if (ip !== 'Unknown IP') {
-        const midnightToday = new Date(currentLoginTime);
-        midnightToday.setHours(0, 0, 0, 0);
+      // 요청사항 반영: 
+      // 1) user_email이 현재 유저와 같고
+      // 2) current_time - login_time > 30min (30분 초과) 이며
+      // 3) logout_time이 null인 이전 세션들을 당일 00:00:00 시간으로 업데이트
+      const midnightToday = new Date(currentLoginTime);
+      midnightToday.setHours(0, 0, 0, 0);
 
-        const { error: updateError } = await supabase
-          .from('login_logs')
-          .update({ logout_time: midnightToday.toISOString() })
-          .is('logout_time', null)
-          .eq('ip_address', ip)
-          .lt('login_time', currentLoginTimeISO);
+      const thirtyMinutesAgo = new Date(currentLoginTime.getTime() - 30 * 60 * 1000).toISOString();
 
-        if (updateError) {
-          console.error('이전 로그인 세션 강제 종료 업데이트 실패:', updateError.message);
-        }
+      const { error: updateError } = await supabase
+        .from('login_logs')
+        .update({ logout_time: midnightToday.toISOString() })
+        .eq('user_email', userEmail)
+        .is('logout_time', null)
+        .lt('login_time', thirtyMinutesAgo);
+
+      if (updateError) {
+        console.error('이전 로그인 세션 강제 종료 업데이트 실패:', updateError.message);
       }
 
       // 새로운 로그인 기록 삽입
@@ -1390,7 +1393,7 @@ export default function App() {
                         )}
 
                         {/* 하위 대댓글 목록 출력 영역 */}
-                        {replies.length > 0 && (
+                        {replies.length > 0 && ( 
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px', paddingLeft: '16px', borderLeft: '2px solid #e2e8f0' }}>
                             {replies.map((r) => (
                               <div key={r.id} style={{ padding: '6px 8px', background: '#f8fafc', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
