@@ -576,28 +576,55 @@ export default function App() {
       return;
     }
 
-    const corsSafeUrls = [
-      'https://www.w3schools.com/html/horse.mp3',
-      'https://actions.google.com/sounds/v1/ambiences/rain_heavy.ogg',
-      'https://www.w3schools.com/html/horse.ogg'
-    ];
+    try {
+      const newTracksPayload = [];
 
-    const newTracksPayload = files.map((file, idx) => ({
-      portfolio_id: currentPortfolioId,
-      track_name: file.name,
-      file_url: corsSafeUrls[idx % corsSafeUrls.length],
-      uploader_type: 'mine',
-      order: tracks.length + idx + 1
-    }));
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        // 파일 이름이 겹치지 않도록 유니크한 파일명 생성
+        const fileExt = file.name.split('.').pop();
+        const fileName = `${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${fileExt}`;
+        const filePath = `${currentPortfolioId}/${fileName}`;
 
-    const { data, error } = await supabase.from('tracks').insert(newTracksPayload).select();
+        // 1. Supabase Storage에 파일 업로드 ('audio_files' 버킷에 업로드)
+        const { error: uploadError } = await supabase.storage
+          .from('audio_files')
+          .upload(filePath, file);
 
-    if (error) {
-      alert('음원 저장 중 오류가 발생했습니다.');
-    } else {
-      setTracks((prev) => [...prev, ...data]);
-      if (!selectedTrack && data.length > 0) setSelectedTrack(data[0].id);
-      alert(`${files.length}개의 음원이 추가되었습니다.`);
+        if (uploadError) {
+          throw new Error(`파일 업로드 실패 (${file.name}): ${uploadError.message}`);
+        }
+
+        // 2. 업로드된 파일의 Public(공개) URL 가져오기
+        const { data: publicUrlData } = supabase.storage
+          .from('audio_files')
+          .getPublicUrl(filePath);
+
+        const publicUrl = publicUrlData.publicUrl;
+
+        // 3. DB에 저장할 트랙 데이터 객체 생성 (CORS 문제 해결된 퍼블릭 URL 사용)
+        newTracksPayload.push({
+          portfolio_id: currentPortfolioId,
+          track_name: file.name,
+          file_url: publicUrl,
+          uploader_type: 'mine',
+          order: tracks.length + i + 1
+        });
+      }
+
+      // 4. tracks 테이블에 일괄 Insert
+      const { data, error } = await supabase.from('tracks').insert(newTracksPayload).select();
+
+      if (error) {
+        alert('음원 정보 저장 중 오류가 발생했습니다: ' + error.message);
+      } else {
+        setTracks((prev) => [...prev, ...data]);
+        if (!selectedTrack && data.length > 0) setSelectedTrack(data[0].id);
+        alert(`${files.length}개의 음원이 스토리지에 성공적으로 업로드되었습니다!`);
+      }
+    } catch (err) {
+      console.error('업로드 프로세스 오류:', err);
+      alert(err.message);
     }
   };
 
