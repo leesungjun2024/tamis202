@@ -11,30 +11,36 @@ export default function App() {
   const [isAdmin, setIsAdmin] = useState(false);
   const currentLogIdRef = useRef(null);
 
-  // 2. 탭 관리 상태 ('portfolio' | 'studio' | 'admin_dashboard' | 'admin_management' | 'admin_logs')
+  // 2. 탭 관리 상태
   const [activeTab, setActiveTab] = useState('portfolio');
   const [myPortfolios, setMyPortfolios] = useState([]);
   const [currentPortfolioId, setCurrentPortfolioId] = useState(null);
   const [portfolioName, setPortfolioName] = useState('새 포트폴리오');
-  const [portfolioOwnerEmail, setPortfolioOwnerEmail] = useState(''); // 포트폴리오 소유자 이메일
+  const [portfolioOwnerEmail, setPortfolioOwnerEmail] = useState(''); 
   const [portfolioMembers, setPortfolioMembers] = useState([]);
   const [inviteEmail, setInviteEmail] = useState('');
 
-  // 3. 관리자 전용 데이터 및 대시보드 필터 상태
+  // 3. 관리자 전용 데이터 및 세분화된 대시보드 필터 상태
   const [allPortfoliosAdmin, setAllPortfoliosAdmin] = useState([]);
   const [allFeedbacksAdmin, setAllFeedbacksAdmin] = useState([]);
   const [loginLogs, setLoginLogs] = useState([]);
-  const [dashboardFilter, setDashboardFilter] = useState('week'); // 'week' | 'month' | 'all'
+  
+  const [dashboardFilterType, setDashboardFilterType] = useState('week'); 
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
 
-  // 4. 오디오 재생 및 타임라인 상태
+  // 4. 로그인 이력 자동 리프레시 상태 ('none' | '10s' | '1m' | '5m')
+  const [autoRefreshInterval, setAutoRefreshInterval] = useState('none');
+
+  // 5. 오디오 재생 및 타임라인 상태
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
 
-  // 5. 트랙 리스트
+  // 6. 트랙 리스트
   const [tracks, setTracks] = useState([]);
 
-  // 6. 피드백 및 댓글 상태
+  // 7. 피드백 및 댓글 상태
   const [comments, setComments] = useState([]);
   const [newCommentText, setNewCommentText] = useState('');
   const [authorName, setAuthorName] = useState('사용자');
@@ -53,7 +59,6 @@ export default function App() {
     return userEmail === 'admin@admin.com' || userEmail.startsWith('admin') || userEmail === 'krsungjun@gmail.com';
   };
 
-  // 클라이언트 IP, 지역/국가 및 접속 매체 기록
   const recordLoginLog = async (userEmail) => {
     try {
       let ip = 'Unknown IP';
@@ -73,15 +78,37 @@ export default function App() {
       }
 
       const device = navigator.userAgent;
+      const currentLoginTime = new Date();
+      const currentLoginTimeISO = currentLoginTime.toISOString();
 
+      // 요청사항 반영: 동일 IP이면서 logout_time이 null인 이전 세션들을 당일 00:00:00 시간으로 업데이트
+      if (ip !== 'Unknown IP') {
+        const midnightToday = new Date(currentLoginTime);
+        midnightToday.setHours(0, 0, 0, 0);
+
+        const { error: updateError } = await supabase
+          .from('login_logs')
+          .update({ logout_time: midnightToday.toISOString() })
+          .is('logout_time', null)
+          .eq('ip_address', ip)
+          .lt('login_time', currentLoginTimeISO);
+
+        if (updateError) {
+          console.error('이전 로그인 세션 강제 종료 업데이트 실패:', updateError.message);
+        }
+      }
+
+      // 새로운 로그인 기록 삽입
       const { data, error } = await supabase
         .from('login_logs')
-        .insert([{ user_email: userEmail, ip_address: ip, location: location, device: device }])
+        .insert([{ user_email: userEmail, ip_address: ip, location: location, device: device, login_time: currentLoginTimeISO }])
         .select()
         .single();
 
       if (!error && data) {
         currentLogIdRef.current = data.id;
+      } else if (error) {
+        console.error('로그인 기록 삽입 에러:', error.message);
       }
     } catch (err) {
       console.error('로그인 기록 저장 오류:', err);
@@ -99,7 +126,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       const currentUser = session?.user ?? null;
       if (currentUser) {
         const adminCheck = checkIsAdmin(currentUser.email);
@@ -107,10 +134,37 @@ export default function App() {
         setUser(currentUser);
         fetchMyPortfolios(currentUser, adminCheck);
         setAuthorName(currentUser.email.split('@')[0]);
+
+        if (event === 'SIGNED_IN') {
+          await recordLoginLog(currentUser.email);
+        }
+
         if (adminCheck) fetchAdminData();
+      } else {
+        setUser(null);
+        setIsAdmin(false);
       }
     });
+
+    return () => {
+      subscription?.unsubscribe();
+    };
   }, []);
+
+  // 로그인 이력 자동 리프레시 타이머 설정
+  useEffect(() => {
+    if (activeTab !== 'admin_logs' || autoRefreshInterval === 'none') return;
+
+    let delayMs = 10000; // 10초
+    if (autoRefreshInterval === '1m') delayMs = 60000; // 1분
+    if (autoRefreshInterval === '5m') delayMs = 300000; // 5분
+
+    const timer = setInterval(() => {
+      fetchAdminData();
+    }, delayMs);
+
+    return () => clearInterval(timer);
+  }, [activeTab, autoRefreshInterval]);
 
   const handleAuth = async (e) => {
     e.preventDefault();
@@ -123,15 +177,6 @@ export default function App() {
       if (error) {
         alert(error.message);
         return;
-      }
-      if (data?.user) {
-        const adminCheck = checkIsAdmin(data.user.email);
-        setIsAdmin(adminCheck);
-        setUser(data.user);
-        fetchMyPortfolios(data.user, adminCheck);
-        setAuthorName(data.user.email.split('@')[0]);
-        await recordLoginLog(data.user.email);
-        if (adminCheck) fetchAdminData();
       }
     }
   };
@@ -148,7 +193,6 @@ export default function App() {
     setActiveTab('portfolio');
   };
 
-  // 포트폴리오 목록 조회 시 멤버 및 피드백 개수까지 함게 로드하도록 개선
   const fetchMyPortfolios = async (userObj, adminFlag) => {
     if (!userObj) return;
 
@@ -207,7 +251,6 @@ export default function App() {
         return;
       }
 
-      // 각 포트폴리오별 멤버 및 피드백 정보 조회
       const { data: membersData } = await supabase
         .from('portfolio_members')
         .select('*')
@@ -248,7 +291,20 @@ export default function App() {
       .select('*, tracks(track_name), portfolios(portfolio_name)')
       .order('created_at', { ascending: false });
     
-    const { data: lData } = await supabase.from('login_logs').select('*').order('login_time', { ascending: false });
+    // 로그인 이력 정렬: 접속 중(logout_time 없음) 우선 -> 그 다음 로그아웃 완료 건 (각 그룹 내 로그인시간 최신순)
+    const { data: lData } = await supabase.from('login_logs').select('*');
+    let sortedLogs = [];
+    if (lData) {
+      const activeLogs = lData
+        .filter(l => !l.logout_time)
+        .sort((a, b) => new Date(b.login_time) - new Date(a.login_time));
+      
+      const finishedLogs = lData
+        .filter(l => l.logout_time)
+        .sort((a, b) => new Date(b.login_time) - new Date(a.login_time));
+
+      sortedLogs = [...activeLogs, ...finishedLogs];
+    }
 
     const enhancedPortfolios = (pData || []).map(p => {
       const pMembers = (mData || []).filter(m => m.portfolio_id === p.id);
@@ -271,13 +327,14 @@ export default function App() {
         member_count: 1 + pMembers.length,
         last_track_date: lastTrackDate ? lastTrackDate.toLocaleString() : '음원 없음',
         last_feedback_date: lastFeedbackDate ? lastFeedbackDate.toLocaleString() : '피드백 없음',
-        owner_id: p.user_id || '알 수 없음'
+        owner_id: p.user_id || '알 수 없음',
+        raw_members: pMembers
       };
     });
 
     setAllPortfoliosAdmin(enhancedPortfolios);
     setAllFeedbacksAdmin(fData || []);
-    setLoginLogs(lData || []);
+    setLoginLogs(sortedLogs);
   };
 
   const handleToggleViewYn = async (table, id, currentVal) => {
@@ -580,27 +637,103 @@ export default function App() {
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  // 기간 필터링 헬퍼 함수
-  const filterDataByPeriod = (dataList, dateField = 'created_at') => {
+  const filterByDashboardRange = (itemList, dateField) => {
     const now = new Date();
-    return dataList.filter(item => {
-      if (!item[dateField]) return true;
+    return itemList.filter(item => {
+      if (!item[dateField]) return false;
       const itemDate = new Date(item[dateField]);
-      const diffTime = now - itemDate;
-      const diffDays = diffTime / (1000 * 60 * 60 * 24);
 
-      if (dashboardFilter === 'week') {
-        return diffDays <= 7;
-      } else if (dashboardFilter === 'month') {
-        return diffDays <= 30;
+      if (dashboardFilterType === 'today') {
+        return itemDate.toDateString() === now.toDateString();
+      } else if (dashboardFilterType === 'yesterday') {
+        const yest = new Date();
+        yest.setDate(now.getDate() - 1);
+        return itemDate.toDateString() === yest.toDateString();
+      } else if (dashboardFilterType === 'week') {
+        const diffDays = (now - itemDate) / (1000 * 60 * 60 * 24);
+        return diffDays >= 0 && diffDays <= 7;
+      } else if (dashboardFilterType === 'month') {
+        const diffDays = (now - itemDate) / (1000 * 60 * 60 * 24);
+        return diffDays >= 0 && diffDays <= 30;
+      } else if (dashboardFilterType === 'custom' && fromDate && toDate) {
+        const fDate = new Date(fromDate);
+        const tDate = new Date(toDate);
+        tDate.setHours(23, 59, 59, 999);
+        return itemDate >= fDate && itemDate <= tDate;
       }
       return true;
     });
   };
 
-  const filteredPortfolios = filterDataByPeriod(allPortfoliosAdmin, 'created_at');
-  const filteredFeedbacks = filterDataByPeriod(allFeedbacksAdmin, 'created_at');
-  const filteredLogs = filterDataByPeriod(loginLogs, 'login_time');
+  const filteredPortfolios = filterByDashboardRange(allPortfoliosAdmin, 'created_at');
+  const filteredFeedbacks = filterByDashboardRange(allFeedbacksAdmin, 'created_at');
+  const filteredLogs = filterByDashboardRange(loginLogs, 'login_time');
+
+  const generateTimeSeriesStats = () => {
+    const now = new Date();
+    let slots = [];
+
+    if (dashboardFilterType === 'today' || dashboardFilterType === 'yesterday') {
+      const targetDay = new Date();
+      if (dashboardFilterType === 'yesterday') targetDay.setDate(now.getDate() - 1);
+      
+      for (let h = 0; h < 24; h++) {
+        const label = `${h.toString().padStart(2, '0')}시`;
+        slots.push({ key: label, label, pCount: 0, mCount: 0, fCount: 0, rawDate: new Date(targetDay.getFullYear(), targetDay.getMonth(), targetDay.getDate(), h) });
+      }
+
+      filteredPortfolios.forEach(p => {
+        const d = new Date(p.created_at);
+        if (d.toDateString() === targetDay.toDateString()) {
+          const h = d.getHours();
+          if (slots[h]) { slots[h].pCount += 1; slots[h].mCount += (p.member_count || 1); }
+        }
+      });
+      filteredFeedbacks.forEach(f => {
+        const d = new Date(f.created_at);
+        if (d.toDateString() === targetDay.toDateString()) {
+          const h = d.getHours();
+          if (slots[h]) slots[h].fCount += 1;
+        }
+      });
+    } else {
+      let daysCount = 7;
+      let startDate = new Date();
+
+      if (dashboardFilterType === 'month') {
+        daysCount = 31;
+      } else if (dashboardFilterType === 'custom' && fromDate && toDate) {
+        const f = new Date(fromDate);
+        const t = new Date(toDate);
+        const diff = Math.ceil((t - f) / (1000 * 60 * 60 * 24)) + 1;
+        daysCount = Math.max(7, Math.min(31, diff));
+        startDate = new Date(t);
+      }
+
+      for (let i = daysCount - 1; i >= 0; i--) {
+        const d = new Date(startDate);
+        d.setDate(startDate.getDate() - i);
+        const label = `${d.getMonth() + 1}/${d.getDate()}`;
+        slots.push({ key: label, label, pCount: 0, mCount: 0, fCount: 0, targetDateStr: d.toDateString() });
+      }
+
+      filteredPortfolios.forEach(p => {
+        const d = new Date(p.created_at);
+        const slot = slots.find(s => s.targetDateStr === d.toDateString());
+        if (slot) { slot.pCount += 1; slot.mCount += (p.member_count || 1); }
+      });
+      filteredFeedbacks.forEach(f => {
+        const d = new Date(f.created_at);
+        const slot = slots.find(s => s.targetDateStr === d.toDateString());
+        if (slot) slot.fCount += 1;
+      });
+    }
+
+    return slots;
+  };
+
+  const timeSeriesData = generateTimeSeriesStats();
+  const maxTimeSeriesVal = Math.max(...timeSeriesData.map(s => Math.max(s.pCount, s.mCount, s.fCount)), 1);
 
   const sortedTracks = [...tracks].sort((a, b) => (a.order || 0) - (b.order || 0));
 
@@ -627,7 +760,6 @@ export default function App() {
   return (
     <div style={{ maxWidth: '1050px', margin: '30px auto', padding: '24px', background: '#fff', borderRadius: '16px', boxShadow: '0 4px 20px rgba(0,0,0,0.08)', fontFamily: 'sans-serif' }}>
       
-      {/* 상단 네비게이션 */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', padding: '12px 16px', background: '#f8fafc', borderRadius: '10px', flexWrap: 'wrap', gap: '10px' }}>
         <div>
           <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#4f46e5' }}>👤 {user.email}</span> 
@@ -668,46 +800,81 @@ export default function App() {
         </div>
       </div>
 
-      {/* 1. 관리자 대시보드 페이지 */}
       {activeTab === 'admin_dashboard' && isAdmin ? (
         <div style={{ padding: '10px 0' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
-            <h2 style={{ fontSize: '18px', fontWeight: 'bold', color: '#1e293b', margin: 0 }}>📊 관리자 대시보드 상세 통계</h2>
-            <div style={{ display: 'flex', gap: '6px', background: '#f1f5f9', padding: '4px', borderRadius: '8px' }}>
-              <button onClick={() => setDashboardFilter('week')} style={{ padding: '6px 12px', background: dashboardFilter === 'week' ? '#4f46e5' : 'transparent', color: dashboardFilter === 'week' ? '#fff' : '#475569', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}>최근 1주일</button>
-              <button onClick={() => setDashboardFilter('month')} style={{ padding: '6px 12px', background: dashboardFilter === 'month' ? '#4f46e5' : 'transparent', color: dashboardFilter === 'month' ? '#fff' : '#475569', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}>최근 1개월</button>
-              <button onClick={() => setDashboardFilter('all')} style={{ padding: '6px 12px', background: dashboardFilter === 'all' ? '#4f46e5' : 'transparent', color: dashboardFilter === 'all' ? '#fff' : '#475569', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}>전체 기간</button>
+          
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '10px', background: '#f8fafc', padding: '12px', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
+            <h2 style={{ fontSize: '16px', fontWeight: 'bold', color: '#1e293b', margin: 0 }}>📊 관리자 대시보드 상세 통계</h2>
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+              <button onClick={() => setDashboardFilterType('today')} style={{ padding: '6px 10px', background: dashboardFilterType === 'today' ? '#4f46e5' : '#fff', color: dashboardFilterType === 'today' ? '#fff' : '#475569', border: '1px solid #cbd5e1', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '11px' }}>금일</button>
+              <button onClick={() => setDashboardFilterType('yesterday')} style={{ padding: '6px 10px', background: dashboardFilterType === 'yesterday' ? '#4f46e5' : '#fff', color: dashboardFilterType === 'yesterday' ? '#fff' : '#475569', border: '1px solid #cbd5e1', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '11px' }}>어제</button>
+              <button onClick={() => setDashboardFilterType('week')} style={{ padding: '6px 10px', background: dashboardFilterType === 'week' ? '#4f46e5' : '#fff', color: dashboardFilterType === 'week' ? '#fff' : '#475569', border: '1px solid #cbd5e1', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '11px' }}>최근 일주일</button>
+              <button onClick={() => setDashboardFilterType('month')} style={{ padding: '6px 10px', background: dashboardFilterType === 'month' ? '#4f46e5' : '#fff', color: dashboardFilterType === 'month' ? '#fff' : '#475569', border: '1px solid #cbd5e1', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '11px' }}>최근 한달</button>
+              
+              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginLeft: '6px' }}>
+                <input type="date" value={fromDate} onChange={(e) => { setFromDate(e.target.value); setDashboardFilterType('custom'); }} style={{ padding: '4px', fontSize: '11px', borderRadius: '4px', border: '1px solid #cbd5e1' }} />
+                <span style={{ fontSize: '11px' }}>~</span>
+                <input type="date" value={toDate} onChange={(e) => { setToDate(e.target.value); setDashboardFilterType('custom'); }} style={{ padding: '4px', fontSize: '11px', borderRadius: '4px', border: '1px solid #cbd5e1' }} />
+              </div>
             </div>
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px', marginBottom: '24px' }}>
             <div style={{ background: '#f8fafc', padding: '16px', borderRadius: '12px', border: '1px solid #e2e8f0', textAlign: 'center' }}>
-              <div style={{ fontSize: '12px', color: '#64748b', fontWeight: 'bold' }}>선택 기간 포트폴리오</div>
-              <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#4f46e5', marginTop: '6px' }}>{filteredPortfolios.length} 개</div>
+              <div style={{ fontSize: '12px', color: '#64748b', fontWeight: 'bold' }}>포트폴리오 (기간내 / 전체)</div>
+              <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#4f46e5', marginTop: '6px' }}>
+                {filteredPortfolios.length} 개 <span style={{ fontSize: '13px', color: '#94a3b8' }}>/ {allPortfoliosAdmin.length} 개</span>
+              </div>
             </div>
             <div style={{ background: '#f8fafc', padding: '16px', borderRadius: '12px', border: '1px solid #e2e8f0', textAlign: 'center' }}>
-              <div style={{ fontSize: '12px', color: '#64748b', fontWeight: 'bold' }}>선택 기간 피드백</div>
-              <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#10b981', marginTop: '6px' }}>{filteredFeedbacks.length} 건</div>
+              <div style={{ fontSize: '12px', color: '#64748b', fontWeight: 'bold' }}>피드백 (기간내 / 전체)</div>
+              <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#10b981', marginTop: '6px' }}>
+                {filteredFeedbacks.length} 건 <span style={{ fontSize: '13px', color: '#94a3b8' }}>/ {allFeedbacksAdmin.length} 건</span>
+              </div>
             </div>
             <div style={{ background: '#f8fafc', padding: '16px', borderRadius: '12px', border: '1px solid #e2e8f0', textAlign: 'center' }}>
-              <div style={{ fontSize: '12px', color: '#64748b', fontWeight: 'bold' }}>선택 기간 로그인 이력</div>
-              <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#f59e0b', marginTop: '6px' }}>{filteredLogs.length} 건</div>
+              <div style={{ fontSize: '12px', color: '#64748b', fontWeight: 'bold' }}>로그인 이력 (기간내 / 전체)</div>
+              <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#f59e0b', marginTop: '6px' }}>
+                {filteredLogs.length} 건 <span style={{ fontSize: '13px', color: '#94a3b8' }}>/ {loginLogs.length} 건</span>
+              </div>
             </div>
           </div>
 
           <div style={{ background: '#f8fafc', padding: '16px', borderRadius: '12px', border: '1px solid #e2e8f0', marginBottom: '20px' }}>
-            <h3 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '12px', color: '#334155' }}>📈 1. 시계열 일자별 포트폴리오 및 회원수 현황</h3>
-            <div style={{ height: '160px', display: 'flex', alignItems: 'flex-end', gap: '12px', paddingBottom: '20px', borderBottom: '1px solid #cbd5e1' }}>
-              {filteredPortfolios.length === 0 ? (
-                <div style={{ width: '100%', textAlign: 'center', color: '#94a3b8', lineHeight: '140px' }}>선택한 기간에 해당하는 데이터가 없습니다.</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <h3 style={{ fontSize: '14px', fontWeight: 'bold', color: '#334155', margin: 0 }}>📈 1. 시계열 현황 (포트폴리오 / 회원수 / 피드백수)</h3>
+              <div style={{ fontSize: '11px', color: '#475569', background: '#fff', padding: '4px 8px', borderRadius: '6px', border: '1px solid #cbd5e1' }}>
+                🔵 포트폴리오 | 🟢 회원수 | 🟠 피드백
+              </div>
+            </div>
+
+            <div style={{ height: '200px', display: 'flex', alignItems: 'flex-end', gap: '8px', paddingBottom: '24px', borderBottom: '1px solid #cbd5e1', paddingLeft: '8px', paddingRight: '8px', overflowX: 'auto' }}>
+              {timeSeriesData.length === 0 ? (
+                <div style={{ width: '100%', textAlign: 'center', color: '#94a3b8', lineHeight: '170px' }}>데이터가 없습니다.</div>
               ) : (
-                filteredPortfolios.slice(0, 7).map((p, idx) => (
-                  <div key={p.id || idx} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', height: '100%', justifyContent: 'flex-end' }}>
-                    <div style={{ width: '60%', background: '#4f46e5', height: '100px', borderRadius: '4px 4px 0 0' }} title={p.portfolio_name} />
-                    <span style={{ fontSize: '9px', color: '#64748b', marginTop: '6px' }}>{new Date(p.created_at).toLocaleDateString()}</span>
-                  </div>
-                ))
+                timeSeriesData.map((stat, idx) => {
+                  const pHeight = Math.round((stat.pCount / maxTimeSeriesVal) * 120);
+                  const mHeight = Math.round((stat.mCount / maxTimeSeriesVal) * 120);
+                  const fHeight = Math.round((stat.fCount / maxTimeSeriesVal) * 120);
+
+                  return (
+                    <div key={idx} style={{ flex: 1, minWidth: '32px', display: 'flex', flexDirection: 'column', alignItems: 'center', height: '100%', justifyContent: 'flex-end' }}>
+                      <div style={{ fontSize: '8px', color: '#334155', marginBottom: '2px', textAlign: 'center', whiteSpace: 'nowrap' }}>
+                        {stat.pCount}/{stat.mCount}/{stat.fCount}
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'flex-end', gap: '2px', width: '100%', height: '130px', justifyContent: 'center' }}>
+                        <div style={{ width: '28%', background: '#4f46e5', height: `${Math.max(pHeight, 4)}px`, borderRadius: '2px 2px 0 0' }} title={`포트폴리오: ${stat.pCount}`} />
+                        <div style={{ width: '28%', background: '#10b981', height: `${Math.max(mHeight, 4)}px`, borderRadius: '2px 2px 0 0' }} title={`회원수: ${stat.mCount}`} />
+                        <div style={{ width: '28%', background: '#f59e0b', height: `${Math.max(fHeight, 4)}px`, borderRadius: '2px 2px 0 0' }} title={`피드백: ${stat.fCount}`} />
+                      </div>
+                      <span style={{ fontSize: '9px', color: '#475569', marginTop: '6px', whiteSpace: 'nowrap' }}>{stat.label}</span>
+                    </div>
+                  );
+                })
               )}
+            </div>
+            <div style={{ fontSize: '11px', color: '#64748b', marginTop: '8px', textAlign: 'center' }}>
+              * 선택하신 기간 조건에 맞추어 시계열(시간대 또는 일자별) 3가지 지표(포트폴리오 수 / 회원수 / 피드백 수)가 표출됩니다.
             </div>
           </div>
 
@@ -716,13 +883,13 @@ export default function App() {
               <h3 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '12px', color: '#334155' }}>🎵 2. 콘텐츠 및 피드백 지표</h3>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '12px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', background: '#fff', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
-                  <span>포트폴리오 수</span><strong style={{ color: '#4f46e5' }}>{filteredPortfolios.length} 개</strong>
+                  <span>기간 내 포트폴리오 수</span><strong style={{ color: '#4f46e5' }}>{filteredPortfolios.length} 개</strong>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', background: '#fff', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
-                  <span>피드백 수</span><strong style={{ color: '#10b981' }}>{filteredFeedbacks.length} 건</strong>
+                  <span>기간 내 피드백 수</span><strong style={{ color: '#10b981' }}>{filteredFeedbacks.length} 건</strong>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', background: '#fff', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
-                  <span>피드백 회원수</span><strong style={{ color: '#f59e0b' }}>{new Set(filteredFeedbacks.map(f => f.author)).size} 명</strong>
+                  <span>기간 내 피드백 회원수</span><strong style={{ color: '#f59e0b' }}>{new Set(filteredFeedbacks.map(f => f.author)).size} 명</strong>
                 </div>
               </div>
             </div>
@@ -747,7 +914,6 @@ export default function App() {
           </div>
         </div>
       ) : activeTab === 'admin_management' && isAdmin ? (
-        /* 2. 관리 페이지 */
         <div style={{ padding: '10px 0' }}>
           <h2 style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '16px', color: '#1e293b' }}>⚙️ 관리 페이지 (조회/사용 여부 및 상세 정보 관리)</h2>
 
@@ -822,9 +988,28 @@ export default function App() {
           </div>
         </div>
       ) : activeTab === 'admin_logs' && isAdmin ? (
-        /* 3. 로그인 이력 페이지 */
         <div style={{ padding: '10px 0' }}>
-          <h2 style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '16px', color: '#1e293b' }}>📋 사용자 로그인 이력 조회</h2>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
+            <h2 style={{ fontSize: '18px', fontWeight: 'bold', color: '#1e293b', margin: 0 }}>📋 사용자 로그인 이력 조회</h2>
+            <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+              <button onClick={fetchAdminData} style={{ padding: '5px 10px', background: '#4f46e5', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}>
+                🔄 리프레시
+              </button>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', fontSize: '12px', color: '#475569' }}>
+                <span>자동 리프레시:</span>
+                <label style={{ cursor: 'pointer' }}>
+                  <input type="checkbox" checked={autoRefreshInterval === '10s'} onChange={(e) => setAutoRefreshInterval(e.target.checked ? '10s' : 'none')} /> 10초
+                </label>
+                <label style={{ cursor: 'pointer' }}>
+                  <input type="checkbox" checked={autoRefreshInterval === '1m'} onChange={(e) => setAutoRefreshInterval(e.target.checked ? '1m' : 'none')} /> 1분
+                </label>
+                <label style={{ cursor: 'pointer' }}>
+                  <input type="checkbox" checked={autoRefreshInterval === '5m'} onChange={(e) => setAutoRefreshInterval(e.target.checked ? '5m' : 'none')} /> 5분
+                </label>
+              </div>
+            </div>
+          </div>
+
           <div style={{ background: '#f8fafc', padding: '16px', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
               <thead>
@@ -857,7 +1042,6 @@ export default function App() {
           </div>
         </div>
       ) : activeTab === 'portfolio' ? (
-        /* 포트폴리오 목록 탭 (소유자, 초대된 멤버, 피드백 총 개수 표시 추가) */
         <div style={{ padding: '20px 0' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
             <h2 style={{ fontSize: '20px', fontWeight: 'bold', color: '#1e293b', margin: 0 }}>📁 포트폴리오 목록</h2>
@@ -912,8 +1096,7 @@ export default function App() {
           )}
         </div>
       ) : (
-        /* 스튜디오 탭 */
-        <>
+        <div style={{ padding: '10px 0' }}>
           <div style={{ marginBottom: '20px', padding: '16px', background: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '10px' }}>
               <h2 style={{ fontSize: '18px', fontWeight: 'bold', color: '#1e293b', margin: 0 }}>
@@ -1065,7 +1248,7 @@ export default function App() {
               </div>
             </div>
           </div>
-        </>
+        </div>
       )}
     </div> 
   );
